@@ -43,18 +43,18 @@ def train():
     ).to("cuda")
 
     # Create optimizer
-    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     # Create loss function
     class AugmentedLoss(nn.Module):
         def __init__(self):
             super(AugmentedLoss, self).__init__()
-            self.mse_loss = nn.MSELoss()
+            self.l1loss = nn.L1Loss()
             self.cel_loss = nn.CrossEntropyLoss()
 
         def forward(self, y_hat, y, x_hat, x):
-            # Compute mse loss
-            mse = self.mse_loss(y_hat, y)
+            # Compute l1 loss
+            l1 = self.l1loss(y_hat, y)
 
             # Upsample the clusters to match the original coverage
             x_hat = nn.Upsample(size=(tile_size, tile_size))(x_hat)
@@ -62,7 +62,7 @@ def train():
             # Compute the CEL between the clusters and the original coverage
             cel = self.cel_loss(x_hat, x)
 
-            return mse + cel
+            return l1 + 10.*cel
     augmented_loss = AugmentedLoss()
 
     # Training loop
