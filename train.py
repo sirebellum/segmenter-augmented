@@ -17,8 +17,7 @@ import cv2
 import numpy as np
 
 pixel_size = 16
-tile_enum = {16: 520}
-tile_size = tile_enum[pixel_size]
+tile_size = 512
 batch_size = 8
 
 # main training function
