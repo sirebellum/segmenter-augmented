@@ -107,9 +107,6 @@ class LandCoverageDataset(Dataset):
         # Map the coverage tiles to integers
         coverage_tiles = np.vectorize(nlcd_map.get)(coverage_tiles)
 
-        # Move the channels to the front for pytorch
-        map_tiles = np.moveaxis(map_tiles, -1, 1)
-
         return coverage_tiles, map_tiles
 
     def __len__(self):
@@ -127,6 +124,9 @@ class LandCoverageDataset(Dataset):
 
         # Scale map tiles
         map_tiles = map_tiles.astype("float32") / 255
+
+        # Move the channels to the front for pytorch
+        map_tiles = np.moveaxis(map_tiles, -1, -3)
 
         return torch.tensor(coverage_tiles).long(), torch.tensor(map_tiles).float()
 
