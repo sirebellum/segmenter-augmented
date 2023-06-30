@@ -30,7 +30,7 @@ nlcd_map = {
     90: 19,
     95: 20,
 }
-num_classes = 20 + 1
+NUM_CLASSES = 20 + 1
 
 
 class LandCoverageDataset(Dataset):
@@ -42,9 +42,13 @@ class LandCoverageDataset(Dataset):
         # Get map raster
         self.map_raster = gdal.Open(map_path)
 
+        # Tile size ratio for memory
+        self.tile_ratio = 4
+        self.tile_size = tile_size
+
         # Turn the rasters into numpy arrays of tiles
         self.coverage_tiles, self.map_tiles = self.tile_data(
-            self.map_raster, self.coverage_raster, tile_size
+            self.map_raster, self.coverage_raster, tile_size//self.tile_ratio
         )
 
         self.num_tiles = self.coverage_tiles.shape[0]
@@ -113,9 +117,16 @@ class LandCoverageDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        # Scale the tiles to between 0 and 1
-        map_tiles = self.map_tiles[idx].astype("float32") / 255
+        # Get the tiles
+        map_tiles = self.map_tiles[idx]
         coverage_tiles = self.coverage_tiles[idx]
+
+        # Upscale the tiles to tile_size
+        map_tiles = cv2.resize(map_tiles, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
+        coverage_tiles = cv2.resize(coverage_tiles, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
+
+        # Scale map tiles
+        map_tiles = map_tiles.astype("float32") / 255
 
         return torch.tensor(coverage_tiles).long(), torch.tensor(map_tiles).float()
 

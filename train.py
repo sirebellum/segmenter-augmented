@@ -1,3 +1,5 @@
+import sys
+
 # Imports neded for torch training
 import torch
 import torch.nn as nn
@@ -5,7 +7,7 @@ import torch.optim as optim
 
 # Imports needed for data loading
 from torch.utils.data import DataLoader
-from land_coverage import LandCoverageDataset, num_classes
+from land_coverage import LandCoverageDataset, NUM_CLASSES
 
 # Imports needed for training loop
 from tqdm import tqdm
@@ -16,12 +18,11 @@ from model import AE
 import cv2
 import numpy as np
 
-pixel_size = 16
 tile_size = 512
 batch_size = 8
 
 # main training function
-def train():
+def train(pixel_size=8):
     # Create a dataset object
     dataset = LandCoverageDataset(
         "scratch/nlcd_2019_land_cover_l48_20210604.img",
@@ -37,24 +38,23 @@ def train():
         input_shape=(tile_size, tile_size),
         pixel_size=pixel_size,
         in_channels=3,
-        decode=True,
-        augmented=True,
-        vectors=num_classes
-    ).to("cuda")
+        vectors=NUM_CLASSES,
+    )
+    model = nn.DataParallel(model).to("cuda")
 
     # Create optimizer
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
     # Create loss function
     class AugmentedLoss(nn.Module):
         def __init__(self):
             super(AugmentedLoss, self).__init__()
-            self.l1loss = nn.L1Loss()
+            self.mse_loss = nn.MSELoss()
             self.cel_loss = nn.CrossEntropyLoss()
 
         def forward(self, y_hat, y, x_hat, x):
-            # Compute l1 loss
-            l1 = self.l1loss(y_hat, y)
+            # Compute mse loss
+            mse = self.mse_loss(y_hat, y)
 
             # Upsample the clusters to match the original coverage
             x_hat = nn.Upsample(size=(tile_size, tile_size))(x_hat)
@@ -62,11 +62,11 @@ def train():
             # Compute the CEL between the clusters and the original coverage
             cel = self.cel_loss(x_hat, x)
 
-            return l1 + 10.*cel
+            return mse + cel
     augmented_loss = AugmentedLoss()
 
     # Training loop
-    for epoch in range(1000):
+    for epoch in range(20):
         for batch in tqdm(dataloader):
             optimizer.zero_grad()
             coverage, map = batch
@@ -109,4 +109,5 @@ def train():
 
 # Run the training loop
 if __name__ == "__main__":
-    train()
+    pixel_size = int(sys.argv[1])
+    train(pixel_size=pixel_size)
