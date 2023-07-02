@@ -21,8 +21,21 @@ import numpy as np
 tile_size = 512
 batch_size = 8
 
+# Detach function
+def detach(x):
+    return x.cpu().detach().numpy()
+
 # main training function
 def train(pixel_size=8):
+    # Create model
+    model = AE(
+        input_shape=(tile_size, tile_size),
+        pixel_size=pixel_size,
+        in_channels=3,
+        vectors=NUM_CLASSES,
+    )
+    model = nn.DataParallel(model).to("cuda")
+
     # Create a dataset object
     dataset = LandCoverageDataset(
         "scratch/nlcd_2019_land_cover_l48_20210604.img",
@@ -32,15 +45,6 @@ def train(pixel_size=8):
 
     # Create a dataloader object
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    # Create model
-    model = AE(
-        input_shape=(tile_size, tile_size),
-        pixel_size=pixel_size,
-        in_channels=3,
-        vectors=NUM_CLASSES,
-    )
-    model = nn.DataParallel(model).to("cuda")
 
     # Create optimizer
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
@@ -66,7 +70,8 @@ def train(pixel_size=8):
     augmented_loss = AugmentedLoss()
 
     # Training loop
-    for epoch in range(20):
+    epochs = 20
+    for epoch in range(epochs):
         for batch in tqdm(dataloader):
             optimizer.zero_grad()
             coverage, map = batch
@@ -86,10 +91,10 @@ def train(pixel_size=8):
 
         # Display last batch
         for b in range(coverage.shape[0]):
-            coverage_disp = coverage[b].cpu().detach().numpy()
-            coverage_hat_disp = coverage_hat[b].cpu().detach().numpy()
-            map_hat_disp = map_hat[b].cpu().detach().numpy()
-            map_disp = map[b].cpu().detach().numpy()
+            coverage_disp = detach(coverage[b])
+            coverage_hat_disp = detach(coverage_hat[b])
+            map_hat_disp = detach(map_hat[b])
+            map_disp = detach(map[b])
             
             # Argmax coverage hat
             coverage_hat_disp = np.argmax(coverage_hat_disp, axis=0)
