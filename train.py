@@ -19,14 +19,14 @@ import cv2
 import numpy as np
 
 tile_size = 512
-batch_size = 8
+batch_size = 16
 
 # Detach function
 def detach(x):
     return x.cpu().detach().numpy()
 
 # main training function
-def train(pixel_size=8):
+def train(pixel_size):
     # Create model
     model = AE(
         input_shape=(tile_size, tile_size),
@@ -38,9 +38,10 @@ def train(pixel_size=8):
 
     # Create a dataset object
     dataset = LandCoverageDataset(
-        "scratch/nlcd_2019_land_cover_l48_20210604.img",
-        "scratch/map.tif",
-        tile_size=tile_size,
+        "scratch/coverage_clipped.tif",
+        "scratch/map_clipped.tif",
+        tile_size=512,
+        scale=5,
     )
 
     # Create a dataloader object

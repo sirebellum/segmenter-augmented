@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import cv2
 from torch.utils.data import Dataset
+from math import floor
 
 from osgeo import gdal
 
@@ -34,7 +35,7 @@ NUM_CLASSES = 20 + 1
 
 
 class LandCoverageDataset(Dataset):
-    def __init__(self, coverage_path, map_path, tile_size=512):
+    def __init__(self, coverage_path, map_path, tile_size=512, scale=30):
 
         # Get coverage raster
         self.coverage_raster = gdal.Open(coverage_path)
@@ -42,91 +43,101 @@ class LandCoverageDataset(Dataset):
         # Get map raster
         self.map_raster = gdal.Open(map_path)
 
-        # Tile size ratio for memory
-        self.tile_ratio = 4
+        # Tile size and scale
         self.tile_size = tile_size
-
-        # Turn the rasters into numpy arrays of tiles
-        self.coverage_tiles, self.map_tiles = self.tile_data(
-            self.map_raster, self.coverage_raster, tile_size//self.tile_ratio
-        )
-
-        self.num_tiles = self.coverage_tiles.shape[0]
-
-    # Turn the raster into a grid of tiles
-    def tile_data(self, map, coverage, tile_size):
-
-        # Get numpy arrays from rasters
-        map_array = np.array(map.ReadAsArray(), dtype="uint8")
-        coverage_array = np.array(coverage.ReadAsArray(), dtype="uint8")
-
-        # Use coverage map sizes
-        map_width, map_height = coverage_array.shape[0]//2, coverage_array.shape[1]//2
-
-        # Resize map array
-        map_array = np.moveaxis(map_array, 0, -1)
-        map_array = cv2.resize(map_array, (map_height, map_width))
-
-        # Resize to something manageable
-        coverage_array = cv2.resize(coverage_array, (map_height, map_width), interpolation=cv2.INTER_NEAREST)
-
-        # Get the number of tiles in each dimension
-        num_tiles_x = map_width // tile_size
-        num_tiles_y = map_height // tile_size
+        self.scale = scale
 
         # Get the number of tiles
-        num_tiles = num_tiles_x * num_tiles_y
+        self.num_tiles = self.get_num_tiles(self.coverage_raster)
+        assert self.num_tiles == self.get_num_tiles(self.map_raster)
 
-        # Create empty arrays to hold the tiles
-        map_tiles = np.zeros((num_tiles, tile_size, tile_size, 3), dtype="uint8")
-        coverage_tiles = np.zeros((num_tiles, tile_size, tile_size), dtype="uint8")
+        # Read map
+        print("Loading map")
+        self.map = np.array(self.map_raster.ReadAsArray(), dtype="uint8")
+        self.map = np.swapaxes(self.map, 0, -1)
 
-        # Loop through the tiles
-        for x in range(num_tiles_x):
-            for y in range(num_tiles_y):
-                # Get map tile
-                map_tiles[y*num_tiles_x + x] = map_array[
-                    x * tile_size : (x + 1) * tile_size,
-                    y * tile_size : (y + 1) * tile_size,
-                ]
-                # Get coverage tile
-                coverage_tiles[y*num_tiles_x + x] = coverage_array[
-                    x * tile_size : (x + 1) * tile_size,
-                    y * tile_size : (y + 1) * tile_size,
-                ]
+        # Average bands
+        # print("Averaging map bands")
+        # self.map = self.map.mean(axis=0)
+
+        # Read coverage
+        print("Loading coverage")
+        self.coverage = np.array(self.coverage_raster.ReadAsArray(), dtype="uint8")
+
+    # Get raster size
+    def get_size(self, raster):
+        return raster.RasterYSize, raster.RasterXSize
+
+    # Get the scale ratio
+    def get_scale_ratio(self, raster):
+
+        # Get map resolution per pixel
+        res = raster.GetGeoTransform()[1]
+
+        # Get ratio of user provided scale to map resolution
+        scale_ratio = res / self.scale
+
+        return scale_ratio
+
+    # Get the number of tiles
+    def get_num_tiles(self, raster):
+            
+        # Get raster size
+        size = self.get_size(raster)
+
+        # Get scale ratio
+        scale_ratio = self.get_scale_ratio(raster)
+
+        # Get the number of tiles
+        # Scale is used to get the number of tiles at a given zoom level
+        num_tiles = (
+            floor(size[0]*scale_ratio // self.tile_size),
+            floor(size[1]*scale_ratio // self.tile_size),
+        )
+
+        return num_tiles
+
+    # Get a tiles of size tile_size at zoom level scale
+    def get_tile(self, raster, arr, idx):
+
+        idx = np.unravel_index(idx, self.num_tiles)         
+
+        # Get scale ratio
+        scale_ratio = self.get_scale_ratio(raster)
+
+        # Get the tile size
+        tile_size = int(self.tile_size / scale_ratio)
+
+        # Get the transformed indices
+        idx = int(idx[0] // scale_ratio), int(idx[1] // scale_ratio)
+
+        # Get the tile
+        tile = arr[idx[0] : idx[0] + tile_size,
+                   idx[1] : idx[1] + tile_size]
         
-        # Delete arrays
-        del map_array
-        del coverage_array
+        # Resize the tile
+        tile = cv2.resize(tile, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
 
-        # Get rid of tiles containing pixels with no class
-        truth_map = coverage_tiles != 0
-        map_tiles = map_tiles[np.all(truth_map, axis=(1, 2))]
-        coverage_tiles = coverage_tiles[np.all(truth_map, axis=(1, 2))]
-
-        # Map the coverage tiles to integers
-        coverage_tiles = np.vectorize(nlcd_map.get)(coverage_tiles)
-
-        return coverage_tiles, map_tiles
+        return tile
 
     def __len__(self):
-        return self.num_tiles
+        y_tiles, x_tiles = self.num_tiles
+        return y_tiles * x_tiles
 
     def __getitem__(self, idx):
 
         # Get the tiles
-        map_tiles = self.map_tiles[idx]
-        coverage_tiles = self.coverage_tiles[idx]
+        map_tiles = self.get_tile(self.map_raster, self.map, idx)
+        coverage_tiles = self.get_tile(self.coverage_raster, self.coverage, idx)
 
-        # Upscale the tiles to tile_size
-        map_tiles = cv2.resize(map_tiles, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
-        coverage_tiles = cv2.resize(coverage_tiles, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
+        # Map coverage tiles to integers
+        coverage_tiles = np.vectorize(nlcd_map.get)(coverage_tiles)
 
         # Scale map tiles
         map_tiles = map_tiles.astype("float32") / 255
 
-        # Move the channels to the front for pytorch
-        map_tiles = np.moveaxis(map_tiles, -1, -3)
+        # Move map tiles channel dimension to first
+        map_tiles = np.swapaxes(map_tiles, 0, -1)
 
         return torch.tensor(coverage_tiles).long(), torch.tensor(map_tiles).float()
 
@@ -134,7 +145,9 @@ class LandCoverageDataset(Dataset):
 # run main stuff
 if __name__ == "__main__":
     dataset = LandCoverageDataset(
-        "data/nlcd_2019_land_cover_l48_20210604.img", "data/map.tif", tile_size=512
+        "data/nlcd_2019_land_cover_l48_20210604.img",
+        "data/map.tif",
+        tile_size=512,
+        scale=30,
     )
-
-    # Construct map and display
+    print(dataset[0])
