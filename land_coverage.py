@@ -64,6 +64,9 @@ class LandCoverageDataset(Dataset):
         print("Loading coverage")
         self.coverage = np.array(self.coverage_raster.ReadAsArray(), dtype="uint8")
 
+        # Map coverage tiles to integers
+        self.coverage = np.vectorize(nlcd_map.get)(self.coverage)
+
     # Get raster size
     def get_size(self, raster):
         return raster.RasterYSize, raster.RasterXSize
@@ -115,10 +118,22 @@ class LandCoverageDataset(Dataset):
         tile = arr[idx[0] : idx[0] + tile_size,
                    idx[1] : idx[1] + tile_size]
         
-        # Resize the tile
-        tile = cv2.resize(tile, (self.tile_size, self.tile_size), interpolation=cv2.INTER_NEAREST)
+        # Adjust axes for torch
+        if tile.ndim == 3:
+            tile = np.swapaxes(tile, 0, -1)
+        elif tile.ndim == 2:
+            tile = np.expand_dims(tile, axis=0)
 
-        return tile
+        # Convert to torch for gpu
+        tile = torch.tensor(tile).cuda().byte()
+
+        # Add batch dimension
+        tile = torch.unsqueeze(tile, 0)
+
+        # Resize the tile
+        tile = torch.nn.Upsample(size=(self.tile_size, self.tile_size), mode="nearest")(tile)
+
+        return torch.squeeze(tile)
 
     def __len__(self):
         y_tiles, x_tiles = self.num_tiles
@@ -130,16 +145,10 @@ class LandCoverageDataset(Dataset):
         map_tiles = self.get_tile(self.map_raster, self.map, idx)
         coverage_tiles = self.get_tile(self.coverage_raster, self.coverage, idx)
 
-        # Map coverage tiles to integers
-        coverage_tiles = np.vectorize(nlcd_map.get)(coverage_tiles)
-
         # Scale map tiles
-        map_tiles = map_tiles.astype("float32") / 255
+        map_tiles = map_tiles.float() / 255
 
-        # Move map tiles channel dimension to first
-        map_tiles = np.swapaxes(map_tiles, 0, -1)
-
-        return torch.tensor(coverage_tiles).long(), torch.tensor(map_tiles).float()
+        return coverage_tiles.long(), map_tiles.float()
 
 
 # run main stuff
