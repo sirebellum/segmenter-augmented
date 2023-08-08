@@ -52,20 +52,22 @@ class LandCoverageDataset(Dataset):
         assert self.num_tiles == self.get_num_tiles(self.map_raster)
 
         # Read map
-        print("Loading map")
+        print("Loading map array")
         self.map = np.array(self.map_raster.ReadAsArray(), dtype="uint8")
-        self.map = np.swapaxes(self.map, 0, -1)
 
         # Average bands
         # print("Averaging map bands")
         # self.map = self.map.mean(axis=0)
 
         # Read coverage
-        print("Loading coverage")
+        print("Loading coverage array")
         self.coverage = np.array(self.coverage_raster.ReadAsArray(), dtype="uint8")
 
         # Map coverage tiles to integers
         self.coverage = np.vectorize(nlcd_map.get)(self.coverage)
+
+        # Add a channel dimension
+        self.coverage = np.expand_dims(self.coverage, axis=0)
 
     # Get raster size
     def get_size(self, raster):
@@ -94,35 +96,31 @@ class LandCoverageDataset(Dataset):
         # Get the number of tiles
         # Scale is used to get the number of tiles at a given zoom level
         num_tiles = (
-            floor(size[0]*scale_ratio // self.tile_size),
-            floor(size[1]*scale_ratio // self.tile_size),
+            floor(size[0] * scale_ratio // self.tile_size),
+            floor(size[1] * scale_ratio // self.tile_size),
         )
 
         return num_tiles
 
     # Get a tiles of size tile_size at zoom level scale
-    def get_tile(self, raster, arr, idx):
+    def get_tile(self, raster, arr, idx_og):
 
-        idx = np.unravel_index(idx, self.num_tiles)         
+        # Get xy indices of tile
+        idx = np.unravel_index(idx_og, self.num_tiles)
 
         # Get scale ratio
         scale_ratio = self.get_scale_ratio(raster)
 
         # Get the tile size
-        tile_size = int(self.tile_size / scale_ratio)
+        tile_size_trans = self.tile_size / scale_ratio
 
         # Get the transformed indices
-        idx = int(idx[0] // scale_ratio), int(idx[1] // scale_ratio)
+        idx_trans = (idx[0] * tile_size_trans, idx[1] * tile_size_trans)
 
         # Get the tile
-        tile = arr[idx[0] : idx[0] + tile_size,
-                   idx[1] : idx[1] + tile_size]
-        
-        # Adjust axes for torch
-        if tile.ndim == 3:
-            tile = np.swapaxes(tile, 0, -1)
-        elif tile.ndim == 2:
-            tile = np.expand_dims(tile, axis=0)
+        tile = arr[:,
+                   int(idx_trans[0]) : int(idx_trans[0] + tile_size_trans),
+                   int(idx_trans[1]) : int(idx_trans[1] + tile_size_trans)]
 
         # Convert to torch for gpu
         tile = torch.tensor(tile).cuda().byte()
@@ -159,4 +157,3 @@ if __name__ == "__main__":
         tile_size=512,
         scale=30,
     )
-    print(dataset[0])
