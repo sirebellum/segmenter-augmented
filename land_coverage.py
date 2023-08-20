@@ -109,16 +109,17 @@ class LandCoverageDataset(Dataset):
 
         # Pad map to res
         channel_pad = (0, 0)
-        height_pad = (0, res - self.map.shape[1] % res)
-        width_pad = (0, res - self.map.shape[2] % res)
-        map_padded = np.pad(map, (channel_pad, height_pad, width_pad), mode="constant")
+        height_pad = (0, res - map.shape[1] % res)
+        width_pad = (0, res - map.shape[2] % res)
+        vectors = np.pad(map, (channel_pad, height_pad, width_pad), mode="constant")
+        res_shape = (vectors.shape[1] // res, vectors.shape[2] // res)
 
         # Reshape map to (h/res*w/res, c*res*res)
-        vectors = map_padded.reshape(
-            map_padded.shape[0],
-            map_padded.shape[1] // res,
+        vectors = vectors.reshape(
+            vectors.shape[0],
+            vectors.shape[1] // res,
             res,
-            map_padded.shape[2] // res,
+            vectors.shape[2] // res,
             res
         )
         vectors = vectors.transpose(1, 3, 0, 2, 4)
@@ -133,7 +134,7 @@ class LandCoverageDataset(Dataset):
         clusters = kmeans.predict(vectors).astype("uint8")
 
         # Reshape into image (n, c, h, w)
-        clusters = clusters.reshape(1, 1, map_padded.shape[-2] // res, map_padded.shape[-1] // res)
+        clusters = clusters.reshape(1, 1, *res_shape)
 
         # Convert to torch for gpu
         clusters = torch.tensor(clusters).cuda()

@@ -7,7 +7,7 @@ import torch.optim as optim
 
 # Imports needed for data loading
 from torch.utils.data import DataLoader
-from land_coverage import LandCoverageDataset, NUM_CLASSES
+from land_coverage import LandCoverageDataset, NUM_SEGMENTS
 
 # Imports needed for training loop
 from tqdm import tqdm
@@ -17,6 +17,7 @@ from model import AE
 
 import cv2
 import numpy as np
+import glob
 
 tile_size = 512
 batch_size = 16
@@ -32,20 +33,19 @@ def train(pixel_size):
         input_shape=(tile_size, tile_size),
         pixel_size=pixel_size,
         in_channels=3,
-        vectors=NUM_CLASSES,
+        vectors=NUM_SEGMENTS,
     )
     model = nn.DataParallel(model).to("cuda")
 
-    # Create a dataset object
-    dataset = LandCoverageDataset(
-        "scratch/coverage_clipped.tif",
-        "scratch/map_clipped.tif",
-        tile_size=512,
-        scale=5,
-    )
-
-    # Create a dataloader object
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # Get city tifs
+    cities = [
+        "houston0",
+        "houston1",
+        "austin",
+    ]
+    maps = []
+    for city in cities:
+        maps += glob.glob(f"scratch/map/{city}.tif")
 
     # Create optimizer
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
@@ -70,47 +70,61 @@ def train(pixel_size):
             return mse + cel
     augmented_loss = AugmentedLoss()
 
-    # Training loop
-    epochs = 20
-    for epoch in range(epochs):
-        for batch in tqdm(dataloader):
-            optimizer.zero_grad()
-            coverage, map = batch
+    # Iterate through the maps and coverages, n times
+    n = 3
+    for _ in range(n):
+        for map in maps:
+            # Create a dataset object
+            dataset = LandCoverageDataset(
+                map,
+                tile_size=tile_size,
+                scale=1,
+            )
 
-            # Move to gpu
-            coverage = coverage.to("cuda")
-            map = map.to("cuda")
+            # Create a dataloader object
+            dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-            # Forward pass
-            coverage_hat, map_hat = model(map)
+            # Training loop
+            epochs = 5
+            for _ in range(epochs):
+                for batch in tqdm(dataloader):
+                    optimizer.zero_grad()
+                    coverage, map = batch
 
-            # Compute loss
-            loss = augmented_loss(map_hat, map, coverage_hat, coverage)
-            loss.backward()
+                    # Move to gpu
+                    coverage = coverage.to("cuda")
+                    map = map.to("cuda")
 
-            optimizer.step()
+                    # Forward pass
+                    coverage_hat, map_hat = model(map)
 
-        # Display last batch
-        for b in range(coverage.shape[0]):
-            coverage_disp = detach(coverage[b])
-            coverage_hat_disp = detach(coverage_hat[b])
-            map_hat_disp = detach(map_hat[b])
-            map_disp = detach(map[b])
-            
-            # Argmax coverage hat
-            coverage_hat_disp = np.argmax(coverage_hat_disp, axis=0)
+                    # Compute loss
+                    loss = augmented_loss(map_hat, map, coverage_hat, coverage)
+                    loss.backward()
 
-            # Show predicted and actual map
-            map_hat_disp = np.moveaxis(map_hat_disp, 0, -1)
-            cv2.imwrite(f"images/{b}_map_hat.jpg", (map_hat_disp*255).astype(np.uint8))
-            map_disp = np.moveaxis(map_disp, 0, -1)
-            cv2.imwrite(f"images/{b}_map.jpg", (map_disp*255).astype(np.uint8))
+                    optimizer.step()
 
-            # Show predicted and actual coverage
-            cv2.imwrite(f"images/{b}_coverage_hat.jpg", coverage_hat_disp*10)
-            cv2.imwrite(f"images/{b}_coverage.jpg", coverage_disp*10)
+                # Display last batch
+                for b in range(coverage.shape[0]):
+                    coverage_disp = detach(coverage[b])
+                    coverage_hat_disp = detach(coverage_hat[b])
+                    map_hat_disp = detach(map_hat[b])
+                    map_disp = detach(map[b])
+                    
+                    # Argmax coverage hat
+                    coverage_hat_disp = np.argmax(coverage_hat_disp, axis=0)
 
-    torch.save(model.state_dict(), f"models/model_{pixel_size}.pth")
+                    # Show predicted and actual map
+                    map_hat_disp = np.moveaxis(map_hat_disp, 0, -1)
+                    cv2.imwrite(f"images/{b}_map_hat.jpg", (map_hat_disp*255).astype(np.uint8))
+                    map_disp = np.moveaxis(map_disp, 0, -1)
+                    cv2.imwrite(f"images/{b}_map.jpg", (map_disp*255).astype(np.uint8))
+
+                    # Show predicted and actual coverage
+                    cv2.imwrite(f"images/{b}_coverage_hat.jpg", coverage_hat_disp*10)
+                    cv2.imwrite(f"images/{b}_coverage.jpg", coverage_disp*10)
+
+        torch.save(model.state_dict(), f"models/model_{pixel_size}.pth")
     
 
 # Run the training loop
