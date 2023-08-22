@@ -11,8 +11,11 @@ from tqdm import tqdm
 
 from osgeo import gdal
 
+from model import flood_fill
+
 CLUSTERS_MIN = 2
 CLUSTERS_MAX = 8
+TILE_SIZE = 512
 
 class LandCoverageDataset(Dataset):
     def __init__(self, map_path, tile_size=512, scale=30):
@@ -180,11 +183,11 @@ class LandCoverageDataset(Dataset):
     def best_kmeans(self, tile, min_clusters=2, n_clusters=8):
 
         # Get the best kmeans clusters for the tile
-        min_improvement = 1e8
+        min_improvement = 1e7
         best_inertia = np.inf
         best_clusters = None
         for n in range(min_clusters, n_clusters + 1):
-            clusters, inertia = self.kmeans(tile, res=4, n_clusters=n)
+            clusters, inertia = self.kmeans(tile, res=16, n_clusters=n)
             if inertia < best_inertia and best_inertia - inertia > min_improvement:
                 best_inertia = inertia
                 best_clusters = clusters
@@ -264,7 +267,7 @@ class LandCoverageDataset(Dataset):
         # Scale map tile to float [0, 1]
         map_tile = map_tile.float() / 255
 
-        return edge_tile.long(), map_tile.float()
+        return edge_tile.float(), map_tile.float()
 
 # run main stuff
 if __name__ == "__main__":
@@ -280,20 +283,25 @@ if __name__ == "__main__":
 
     # Create figure
     fig = plt.figure(figsize=(20, 20))
-
-    # Create grid
     gs = gridspec.GridSpec(4, 4)
 
     # Plot map
-    # ax = fig.add_subplot(gs[0:2, 0:2])
-    # ax.imshow(dataset.map.transpose(1, 2, 0))
+    ax = fig.add_subplot(gs[0:2, 0:4])
+    ax.imshow(dataset.map.transpose(1, 2, 0))
 
     # Plot coverage
-    # ax = fig.add_subplot(gs[2:4, 0:2])
-    # ax.imshow(dataset.edge_map[0])
+    ax = fig.add_subplot(gs[2:4, 0:4])
+    ax.imshow(dataset.edge_map[0])
+
+    # Save figure
+    fig.savefig("images/edge_map.png")
+
+    # Create figure
+    fig = plt.figure(figsize=(20, 20))
+    gs = gridspec.GridSpec(4, 4)
     
     # Plot random selection of map tiles alongside coverage tiles
-    for i in range(16):
+    for i in range(8):
         # Get random index
         idx = np.random.randint(0, len(dataset))
 
@@ -301,14 +309,14 @@ if __name__ == "__main__":
         map_tile = dataset[idx][1].cpu().numpy()
 
         # Get coverage tile
-        edge_tile = dataset[idx][0].cpu().numpy()
+        edge_tile = flood_fill(dataset[idx][0])
 
         # Plot map tile
-        ax = fig.add_subplot(gs[i // 4 * 2, i % 4])
+        ax = fig.add_subplot(gs[i // 4, i % 4])
         ax.imshow(map_tile.transpose(1, 2, 0))
 
         # Plot coverage tile
-        ax = fig.add_subplot(gs[i // 4 * 2 + 1, i % 4])
+        ax = fig.add_subplot(gs[i // 4 + 2, i % 4])
         ax.imshow(edge_tile[0])
         
     # Save figure

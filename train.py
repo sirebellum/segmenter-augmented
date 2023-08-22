@@ -13,13 +13,12 @@ from land_coverage import LandCoverageDataset
 from tqdm import tqdm
 
 # Import model
-from model import AE
+from model import AE, TILE_SIZE
 
 import cv2
 import numpy as np
 import glob
 
-tile_size = 512
 batch_size = 16
 
 # Detach function
@@ -30,7 +29,7 @@ def detach(x):
 def train(pixel_size):
     # Create model
     model = AE(
-        input_shape=(tile_size, tile_size),
+        input_shape=(TILE_SIZE, TILE_SIZE),
         pixel_size=pixel_size,
         in_channels=3,
         vectors=1,  # Edge detection
@@ -63,7 +62,7 @@ def train(pixel_size):
             mse = self.mse_loss(y_hat, y)
 
             # Upsample the clusters to match the original coverage
-            x_hat = nn.Upsample(size=(tile_size, tile_size))(x_hat)
+            x_hat = nn.Upsample(size=(TILE_SIZE, TILE_SIZE))(x_hat)
 
             # Compute the CEL between the clusters and the original coverage
             x_hat = torch.squeeze(x_hat, dim=1)
@@ -79,7 +78,7 @@ def train(pixel_size):
             # Create a dataset object
             dataset = LandCoverageDataset(
                 map,
-                tile_size=tile_size,
+                tile_size=TILE_SIZE,
                 scale=1,
             )
 
