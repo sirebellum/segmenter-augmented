@@ -7,7 +7,7 @@ import torch.optim as optim
 
 # Imports needed for data loading
 from torch.utils.data import DataLoader
-from land_coverage import LandCoverageDataset, NUM_SEGMENTS
+from land_coverage import LandCoverageDataset
 
 # Imports needed for training loop
 from tqdm import tqdm
@@ -33,15 +33,16 @@ def train(pixel_size):
         input_shape=(tile_size, tile_size),
         pixel_size=pixel_size,
         in_channels=3,
-        vectors=NUM_SEGMENTS,
+        vectors=1,  # Edge detection
+        decode=True,
     )
     model = nn.DataParallel(model).to("cuda")
 
     # Get city tifs
     cities = [
+        "austin",
         "houston0",
         "houston1",
-        "austin",
     ]
     maps = []
     for city in cities:
@@ -65,9 +66,10 @@ def train(pixel_size):
             x_hat = nn.Upsample(size=(tile_size, tile_size))(x_hat)
 
             # Compute the CEL between the clusters and the original coverage
-            cel = self.cel_loss(x_hat, x)
+            x_hat = torch.squeeze(x_hat, dim=1)
+            edge = self.mse_loss(x_hat, x)
 
-            return mse + cel
+            return 0.1*mse + edge
     augmented_loss = AugmentedLoss()
 
     # Iterate through the maps and coverages, n times
@@ -121,8 +123,8 @@ def train(pixel_size):
                     cv2.imwrite(f"images/{b}_map.jpg", (map_disp*255).astype(np.uint8))
 
                     # Show predicted and actual coverage
-                    cv2.imwrite(f"images/{b}_coverage_hat.jpg", coverage_hat_disp*10)
-                    cv2.imwrite(f"images/{b}_coverage.jpg", coverage_disp*10)
+                    cv2.imwrite(f"images/{b}_coverage_hat.jpg", coverage_hat_disp*255)
+                    cv2.imwrite(f"images/{b}_coverage.jpg", coverage_disp*255)
 
         torch.save(model.state_dict(), f"models/model_{pixel_size}.pth")
     
