@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import cv2
 from torch.utils.data import Dataset
-from math import floor, sqrt
+from math import floor
 
 # Kmeans imports
 from sklearn.cluster import KMeans
@@ -11,14 +11,10 @@ from tqdm import tqdm
 
 from osgeo import gdal
 
-from model import flood_fill
-
-CLUSTERS_MIN = 2
-CLUSTERS_MAX = 8
-TILE_SIZE = 512
+from model import TILE_SIZE, NUM_SEGMENTS, AE
 
 class LandCoverageDataset(Dataset):
-    def __init__(self, map_path, tile_size=512, scale=30):
+    def __init__(self, map_path, tile_size=512, scale=30, pixel_size=1):
 
         # Get map raster
         self.map_raster = gdal.Open(map_path)
@@ -41,55 +37,13 @@ class LandCoverageDataset(Dataset):
             : self.map.shape[2] - self.map.shape[2] % tile_size,
         ]
 
-        # Create tiles to calculate kmeans clusters
-        tiles = self.map.reshape(
-            self.map.shape[0],
-            self.map.shape[1] // tile_size,
-            tile_size,
-            self.map.shape[2] // tile_size,
-            tile_size,
-        )
-        tiles = tiles.transpose(1, 3, 0, 2, 4)
-        tiles = tiles.reshape(
-            self.map.shape[1] // tile_size * self.map.shape[2] // tile_size,
-            self.map.shape[0],
-            tile_size,
-            tile_size,
-        )
-
         # Calculate "best" kmeans clusters per tile
         print("Calculating kmeans clusters")
-        kmeans_tiles = []
-        for tile in tqdm(tiles):
-            kmeans_tiles.append(self.best_kmeans(tile, min_clusters=CLUSTERS_MIN, n_clusters=CLUSTERS_MAX))
-
-        # Reshape kmeans clusters to match map
-        kmeans_tiles = np.stack(kmeans_tiles, axis=0)
-        self.kmeans_clusters = kmeans_tiles.reshape(
-            self.map.shape[1] // tile_size,
-            self.map.shape[2] // tile_size,
-            tile_size,
-            tile_size,
+        self.kmeans_clusters, _ = self.kmeans(
+            self.map,
+            res=pixel_size,
+            n_clusters=NUM_SEGMENTS,
         )
-        self.kmeans_clusters = self.kmeans_clusters.transpose(0, 2, 1, 3)
-        self.kmeans_clusters = self.kmeans_clusters.reshape(self.map.shape[1:])
-
-        # Get edge map of kmeans clusters per tile
-        print("Calculating edge map")
-        self.edge_map = []
-        for tile in tqdm(kmeans_tiles):
-            self.edge_map.append(self.get_edge_map(tile))
-        
-        # Reshape edge map to match map
-        self.edge_map = np.stack(self.edge_map, axis=0)
-        self.edge_map = self.edge_map.reshape(
-            self.map.shape[1] // tile_size,
-            self.map.shape[2] // tile_size,
-            tile_size,
-            tile_size,
-        )
-        self.edge_map = self.edge_map.transpose(0, 2, 1, 3)
-        self.edge_map = self.edge_map.reshape(1, *self.map.shape[1:])
 
     # Get raster size
     def get_size(self, raster):
@@ -148,7 +102,7 @@ class LandCoverageDataset(Dataset):
                    floor(idx_trans[1]) : floor(idx_trans[1] + tile_size_trans)]
 
         # Convert to torch for gpu
-        tile = torch.tensor(tile).cuda().byte()
+        tile = torch.tensor(tile).byte()
 
         # Add batch dimension
         tile = torch.unsqueeze(tile, 0)
@@ -180,15 +134,15 @@ class LandCoverageDataset(Dataset):
         return edge_map.astype("bool")
 
     # Best kmeans calculator
-    def best_kmeans(self, tile, min_clusters=2, n_clusters=8):
+    def best_kmeans(self, tile, min_clusters=2, n_clusters=8, pixel_size=1):
 
         # Get the best kmeans clusters for the tile
-        min_improvement = 1e7
+        improvement_factor = 1.1
         best_inertia = np.inf
         best_clusters = None
         for n in range(min_clusters, n_clusters + 1):
-            clusters, inertia = self.kmeans(tile, res=16, n_clusters=n)
-            if inertia < best_inertia and best_inertia - inertia > min_improvement:
+            clusters, inertia = self.kmeans(tile, res=pixel_size, n_clusters=n)
+            if best_inertia/inertia > improvement_factor:
                 best_inertia = inertia
                 best_clusters = clusters
             else:
@@ -224,17 +178,19 @@ class LandCoverageDataset(Dataset):
 
         # Fit kmeans on randum subset of vectors
         kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
-        kmeans = kmeans.fit(vectors)
+        sample_size = 42690 if vectors.shape[0] > 42690 else vectors.shape[0]
+        subset = np.random.choice(vectors.shape[0], sample_size, replace=False)
+        kmeans = kmeans.fit(vectors[subset])
 
         # Get clusters and mean inertia
-        clusters = kmeans.labels_.astype("uint8")
+        clusters = kmeans.predict(vectors).astype("uint8")
         inertia = kmeans.inertia_
 
         # Reshape into image (n, c, h, w)
         clusters = clusters.reshape(1, 1, *res_shape)
 
-        # Convert to torch for gpu
-        clusters = torch.tensor(clusters).cuda()
+        # Convert to torch
+        clusters = torch.tensor(clusters)
 
         # Rescale to original size
         clusters = torch.nn.Upsample(size=(map.shape[-2], map.shape[-1]), mode="nearest")(clusters)
@@ -258,16 +214,16 @@ class LandCoverageDataset(Dataset):
         )
         
         # Get coverage tiles generated from kmeans
-        edge_tile = self.get_tile(
+        cluster_tile = self.get_tile(
             self.map_raster,
-            self.edge_map,
+            self.kmeans_clusters,
             idx
         )
 
         # Scale map tile to float [0, 1]
         map_tile = map_tile.float() / 255
 
-        return edge_tile.float(), map_tile.float()
+        return cluster_tile.long(), map_tile.float()
 
 # run main stuff
 if __name__ == "__main__":
@@ -275,49 +231,99 @@ if __name__ == "__main__":
         "scratch/map/test.tif",
         tile_size=512,
         scale=1,
+        pixel_size=4,
     )
+
+    model = torch.jit.load("models/model_4.pth").cuda().eval()
 
     # Display a set of tiles
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
 
     # Create figure
-    fig = plt.figure(figsize=(20, 20))
-    gs = gridspec.GridSpec(4, 4)
+    fig = plt.figure(figsize=(10, 20))
+    gs = gridspec.GridSpec(2, 1)
 
     # Plot map
-    ax = fig.add_subplot(gs[0:2, 0:4])
-    ax.imshow(dataset.map.transpose(1, 2, 0))
+    ax = fig.add_subplot(gs[0, 0])
+    map_array = dataset.map
+    ax.imshow(map_array.transpose(1, 2, 0))
 
-    # Plot coverage
-    ax = fig.add_subplot(gs[2:4, 0:4])
-    ax.imshow(dataset.edge_map[0])
+    # Calculate and plot coverage
+    ax = fig.add_subplot(gs[1, 0])
+    channel_padding = (0, 0)
+    height_padding = (0, TILE_SIZE - map_array.shape[1] % TILE_SIZE)
+    width_padding = (0, TILE_SIZE - map_array.shape[2] % TILE_SIZE)
+    map_padded = np.pad(map_array, (channel_padding, height_padding, width_padding), mode="constant")
+    map_tiles = map_padded.reshape(
+        map_padded.shape[0],
+        map_padded.shape[1] // TILE_SIZE,
+        TILE_SIZE,
+        map_padded.shape[2] // TILE_SIZE,
+        TILE_SIZE,
+    )
+    map_tiles = map_tiles.transpose(1, 3, 0, 2, 4)
+    map_tiles = map_tiles.reshape(
+        map_tiles.shape[0] * map_tiles.shape[1],
+        map_tiles.shape[2],
+        TILE_SIZE,
+        TILE_SIZE,
+    )
+    map_tiles = torch.tensor(map_tiles).cuda().float() / 255
+    coverage_map = model(map_tiles)
+    coverage_map = torch.exp(coverage_map)
+    coverage_map = torch.argmax(coverage_map, dim=1).type(torch.uint8)
+    coverage_map = coverage_map.cpu().numpy()
+    coverage_map = coverage_map.reshape(
+        map_padded.shape[1] // TILE_SIZE,
+        map_padded.shape[2] // TILE_SIZE,
+        coverage_map.shape[1],
+        coverage_map.shape[2],
+    )
+    coverage_map = coverage_map.transpose(0, 2, 1, 3)
+    coverage_map = coverage_map.reshape(
+        1, 1,
+        coverage_map.shape[0] * coverage_map.shape[1],
+        coverage_map.shape[2] * coverage_map.shape[3],
+    )
+    coverage_map = torch.tensor(coverage_map).cuda()
+    coverage_map = torch.nn.Upsample(size=(map_array.shape[1], map_array.shape[2]), mode="nearest")(coverage_map)
+    coverage_map = coverage_map[
+        0,
+        :,
+        : map_array.shape[1],
+        : map_array.shape[2],
+    ].cpu().numpy()
+    ax.imshow(coverage_map[0])
 
     # Save figure
     fig.savefig("images/edge_map.png")
 
     # Create figure
     fig = plt.figure(figsize=(20, 20))
-    gs = gridspec.GridSpec(4, 4)
+    gs = gridspec.GridSpec(4, 2)
     
     # Plot random selection of map tiles alongside coverage tiles
-    for i in range(8):
+    used_idx = []
+    for i in range(4):
         # Get random index
         idx = np.random.randint(0, len(dataset))
+        while idx in used_idx:
+            idx = np.random.randint(0, len(dataset))
 
         # Get map tile
         map_tile = dataset[idx][1].cpu().numpy()
 
         # Get coverage tile
-        edge_tile = flood_fill(dataset[idx][0])
+        coverage_map = dataset[idx][0].cpu().numpy()
 
         # Plot map tile
-        ax = fig.add_subplot(gs[i // 4, i % 4])
+        ax = fig.add_subplot(gs[i, 0])
         ax.imshow(map_tile.transpose(1, 2, 0))
 
         # Plot coverage tile
-        ax = fig.add_subplot(gs[i // 4 + 2, i % 4])
-        ax.imshow(edge_tile[0])
+        ax = fig.add_subplot(gs[i, 1])
+        ax.imshow(coverage_map)
         
     # Save figure
     fig.savefig("images/land_coverage.png")
