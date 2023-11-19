@@ -36,15 +36,6 @@ def train(pixel_size):
         decode=True,
     ).cuda()
 
-    # Get city tifs
-    cities = [
-        "houston0",
-        "houston1",
-    ]
-    maps = []
-    for city in cities:
-        maps += glob.glob(f"scratch/map/{city}.tif")
-
     # Create optimizer
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
@@ -53,30 +44,32 @@ def train(pixel_size):
         def __init__(self):
             super(AugmentedLoss, self).__init__()
             self.mse_loss = nn.MSELoss()
-            # self.cel_loss = nn.CrossEntropyLoss()
+            self.cel_loss = nn.CrossEntropyLoss()
 
-        def forward(self, y_hat, y):
+        def forward(self, y_hat, y, x_hat, x):
             # Compute mse loss
             mse = self.mse_loss(y_hat, y)
 
-            # Deal with log softmax
-            # x_hat = torch.nn.functional.softmax(x_hat, dim=1)
+            # Softmax the clusters
+            x_hat = torch.nn.functional.softmax(x_hat, dim=1)
 
             # Upsample the clusters to match the original coverage
-            # x_hat = nn.Upsample(size=(TILE_SIZE, TILE_SIZE))(x_hat)
+            x_hat = nn.Upsample(size=(TILE_SIZE, TILE_SIZE))(x_hat)
+
+            # Get rid of the depth dimension
+            x_hat = torch.squeeze(x_hat, dim=1)
+            x = torch.squeeze(x, dim=1)
 
             # Compute the CEL between the clusters and the original coverage
-            # cel = self.cel_loss(x_hat, x)
+            cel = self.cel_loss(x_hat, x)
 
-            return mse
+            return mse + cel
     augmented_loss = AugmentedLoss()
 
     # Iterate through the maps and coverages, n times
     dataset = LandCoverageDataset(
-        maps,
         tile_size=TILE_SIZE,
         scale=1,
-        pixel_size=pixel_size,
     )
 
     # Create a dataloader object
@@ -88,13 +81,13 @@ def train(pixel_size):
     for _ in range(epochs):
         for batch in tqdm(dataloader):
             optimizer.zero_grad()
-            map = batch
+            map, vector = batch
 
             # Forward pass
-            map_hat = model(map)
+            map_hat, vector_hat = model(map)
 
             # Compute loss
-            loss = augmented_loss(map_hat, map)
+            loss = augmented_loss(map_hat, map, vector_hat, vector)
             loss.backward()
 
             optimizer.step()
@@ -103,12 +96,24 @@ def train(pixel_size):
         for b in range(map.shape[0]):
             map_hat_disp = detach(map_hat[b])
             map_disp = detach(map[b])
-            
+            vector_hat_disp = detach(vector_hat[b])
+            vector_disp = detach(vector[b])
+
+            # Quick lambda function to convert to RGB
+            to_rgb = lambda x: np.moveaxis(x, 0, -1) * 255
+
             # Show predicted and actual map
-            map_hat_disp = np.moveaxis(map_hat_disp, 0, -1)
-            cv2.imwrite(f"images/{b}_map_hat.jpg", (map_hat_disp*255).astype(np.uint8))
-            map_disp = np.moveaxis(map_disp, 0, -1)
-            cv2.imwrite(f"images/{b}_map.jpg", (map_disp*255).astype(np.uint8))
+            cv2.imwrite(f"images/{b}_map_hat.jpg", to_rgb(map_hat_disp))
+            cv2.imwrite(f"images/{b}_map.jpg", to_rgb(map_disp))
+
+            # Show predicted and actual vector
+            vector_hat_disp = np.moveaxis(vector_hat_disp, 0, -1)
+            vector_hat_disp = np.argmax(vector_hat_disp, axis=-1)
+            vector_hat_disp = vector_hat_disp * (255 // NUM_SEGMENTS)
+            cv2.imwrite(f"images/{b}_vector_hat.jpg", (vector_hat_disp).astype(np.uint8))
+            vector_disp = np.moveaxis(vector_disp, 0, -1)
+            vector_disp = vector_disp * (255 // NUM_SEGMENTS)
+            cv2.imwrite(f"images/{b}_vector.jpg", (vector_disp).astype(np.uint8))
 
     # Create non-decoder model
     model_encoder = AE(

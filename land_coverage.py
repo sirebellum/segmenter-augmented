@@ -15,43 +15,47 @@ from osgeo import gdal
 from model import TILE_SIZE, NUM_SEGMENTS, AE
 
 class LandCoverageDataset(Dataset):
-    def __init__(self, map_paths, tile_size=512, scale=30, pixel_size=1):
+    def __init__(self, tile_size=512, scale=30):
 
         # Set up metdata
         self.tile_size = tile_size
         self.scale = scale
 
-        # Iterate through map paths
-        self.maps = []
-        for map_path in map_paths:
+        # Get map raster
+        self.map_raster = gdal.Open("scratch/map/map.tif")
+        self.map = np.array(self.map_raster.ReadAsArray(), dtype="uint8")
 
-            # Get map raster
-            map_raster = gdal.Open(map_path)
+        # Load coverage data
+        self.coverage_raster = gdal.Open("scratch/coverage/coverage.tif")
+        self.coverage = np.array(self.coverage_raster.ReadAsArray(), dtype="uint8")
 
-            # Read map
-            print(f"Loading {map_path}")
-            map = np.array(map_raster.ReadAsArray(), dtype="uint8")
+        # Convert coverage array to continuous integers
+        self.coverage_ints = np.unique(self.coverage)
+        self.coverage_ints = np.arange(len(self.coverage_ints))
+        for i, c in enumerate(np.unique(self.coverage)):
+            self.coverage[self.coverage == c] = self.coverage_ints[i]
 
-            # Pad map to tile size
-            channel_padding = (0, 0)
-            height_padding = (0, tile_size - map.shape[1] % tile_size)
-            width_padding = (0, tile_size - map.shape[2] % tile_size)
-            map = np.pad(map, (channel_padding, height_padding, width_padding), mode="constant")
+        # Resize coverage to map size
+        self.coverage = cv2.resize(
+            self.coverage,
+            (self.map.shape[2], self.map.shape[1]),
+            interpolation=cv2.INTER_NEAREST,
+        )
 
-            self.maps.append(map)
+        # Pad to tile size
+        channel_padding = (0, 0)
+        height_padding = (0, tile_size - self.map.shape[1] % tile_size)
+        width_padding = (0, tile_size - self.map.shape[2] % tile_size)
+        height_padding = height_padding if height_padding[1] != 512 else (0, 0)
+        width_padding = width_padding if width_padding[1] != 512 else (0, 0)
+        self.map = np.pad(self.map, (channel_padding, height_padding, width_padding), mode="constant")
+        self.coverage = np.pad(self.coverage, (height_padding, width_padding), mode="constant")
 
-        # Concatenate
-        self.maps = np.stack(self.maps, axis=0)
-        self.num_tiles = self.get_num_tiles(self.maps)
+        # Num of tiles
+        self.num_tiles = self.get_num_tiles(self.map)
 
-        # # Calculate kmeans for the maps
-        # print("Calculating kmeans clusters")
-        # self.kmeans_clusters, _ = self.kmeans(
-        #     self.maps,
-        #     res=pixel_size,
-        #     n_clusters=NUM_SEGMENTS,
-        # )
-
+        # Add depth dimension
+        self.coverage = np.expand_dims(self.coverage, axis=0)
 
     # Get raster size
     def get_size(self, raster):
@@ -74,15 +78,13 @@ class LandCoverageDataset(Dataset):
         # Get raster size
         size = array.shape
 
-        assert array.shape[2] % self.tile_size == 0, "tile_size must be divisible by map height"
-        assert array.shape[3] % self.tile_size == 0, "tile_size must be divisible by map width"
+        assert array.shape[1] % self.tile_size == 0, "tile_size must be divisible by map height"
+        assert array.shape[2] % self.tile_size == 0, "tile_size must be divisible by map width"
 
         # Get the number of tiles
-        # Scale is used to get the number of tiles at a given zoom level
         num_tiles = (
-            size[0],
+            size[1] // self.tile_size,
             size[2] // self.tile_size,
-            size[3] // self.tile_size,
         )
 
         return num_tiles
@@ -98,112 +100,12 @@ class LandCoverageDataset(Dataset):
 
         # Get the tile
         tile = arr[
-            idx[0],
             :,
-            idx[1] * self.tile_size : idx[1] * self.tile_size + self.tile_size,
-            idx[2] * self.tile_size : idx[2] * self.tile_size + self.tile_size
+            idx[0] * self.tile_size : idx[0] * self.tile_size + self.tile_size,
+            idx[1] * self.tile_size : idx[1] * self.tile_size + self.tile_size
         ]
 
         return tile
-
-    # # Get the edge map of a map
-    # def get_edge_map(self, map):
-
-    #     # Get the edge map
-    #     edge_map = np.zeros(map.shape, dtype="uint8")
-    #     for i in range(map.shape[0]):
-    #         edge_map[i] = cv2.Canny(map[i], 0, np.max(map[i]))
-
-    #     # Average the edge map channels
-    #     edge_map = np.mean(edge_map, axis=0, keepdims=True)
-    #     edge_map[edge_map > 0] = 1
-
-    #     # Display tile with edge map
-    #     # import matplotlib.pyplot as plt
-    #     # fig, ax = plt.subplots(1, 2)
-    #     # ax[0].imshow(map.transpose(1, 2, 0))
-    #     # ax[1].imshow(edge_map[0])
-    #     # plt.show()
-
-    #     return edge_map.astype("bool")
-
-    # # Best kmeans calculator
-    # def best_kmeans(self, tile, min_clusters=2, n_clusters=8, pixel_size=1):
-
-    #     # Get the best kmeans clusters for the tile
-    #     improvement_factor = 1.1
-    #     best_inertia = np.inf
-    #     best_clusters = None
-    #     for n in range(min_clusters, n_clusters + 1):
-    #         clusters, inertia = self.kmeans(tile, res=pixel_size, n_clusters=n)
-    #         if best_inertia/inertia > improvement_factor:
-    #             best_inertia = inertia
-    #             best_clusters = clusters
-    #         else:
-    #             break
-            
-    #     # Display the best clusters with tile
-    #     # import matplotlib.pyplot as plt
-    #     # fig, ax = plt.subplots(1, 2)
-    #     # ax[0].imshow(tile.transpose(1, 2, 0))
-    #     # ax[1].imshow(best_clusters[0])
-    #     # plt.show()
-        
-    #     return best_clusters
-
-    # # CPU Kmeans implementation
-    # def kmeans(self, maps, res=1, n_clusters=8):
-
-    #     assert res > 0, "res must be greater than 0"
-    #     assert maps.shape[2] % res == 0, "vectors must be divisible by res"
-    #     assert maps.shape[3] % res == 0, "vectors must be divisible by res"
-        
-    #     # Reshape map to (h/res*w/res, c*res*res)
-    #     vectors = maps.reshape(
-    #         maps.shape[0],
-    #         maps.shape[1],
-    #         maps.shape[2] // res,
-    #         res,
-    #         maps.shape[3] // res,
-    #         res
-    #     )
-    #     vectors = vectors.transpose(0, 2, 4, 1, 3, 5)
-    #     vectors = vectors.reshape(
-    #         vectors.shape[0] * vectors.shape[1] * vectors.shape[2],
-    #         vectors.shape[3] * vectors.shape[4] * vectors.shape[5],
-    #     )
-
-    #     # Fit kmeans on randum subset of vectors
-    #     kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
-    #     sample_size = 100000 if vectors.shape[0] > 100000 else vectors.shape[0]
-    #     subset = np.random.choice(vectors.shape[0], sample_size, replace=False)
-    #     kmeans = kmeans.fit(vectors[subset])
-
-    #     # Get clusters and inertia
-    #     batch_size = 100000
-    #     n_batches = floor(vectors.shape[0] / batch_size)
-    #     clusters = []
-    #     for i in tqdm(range(n_batches)):
-    #         clusters.append(kmeans.predict(vectors[i * batch_size : (i + 1) * batch_size]).astype("uint8"))
-    #     clusters.append(kmeans.predict(vectors[n_batches * batch_size :]).astype("uint8"))
-    #     clusters = np.concatenate(clusters)
-    #     inertia = kmeans.inertia_
-
-    #     # Reshape into image (n, c, h, w)
-    #     clusters = clusters.reshape(
-    #         maps.shape[0],
-    #         1,
-    #         maps.shape[-2] // res,
-    #         maps.shape[-1] // res,
-    #     )
-
-    #     # Convert to torch
-    #     clusters = torch.tensor(clusters)
-
-    #     # Rescale to original size
-    #     clusters = torch.nn.Upsample(size=(maps.shape[-2], maps.shape[-1]), mode="nearest")(clusters)
-
-    #     return clusters.cpu().numpy(), inertia
 
     # Randomly permute the tile
     def permute(self, map_tile):
@@ -225,37 +127,62 @@ class LandCoverageDataset(Dataset):
 
         # Get the map tiles
         map_tile = self.get_tile(
-            self.maps,
+            self.map,
             idx
         )
-        
-        # Get coverage tiles generated from kmeans
-        # cluster_tile = self.get_tile(
-        #     self.kmeans_clusters,
-        #     idx
-        # )
 
         # Convert to torch tensors
-        map_tile = torch.tensor(map_tile).cuda()
-        # cluster_tile = torch.tensor(cluster_tile).cuda()
+        map_tile = torch.tensor(map_tile).float()
 
         # Randomly permute (flip, rotate, saturation, etc.)
-        map_tile = self.permute(map_tile)
+        # map_tile = self.permute(map_tile)
 
         # Scale map tile to float [0, 1]
-        map_tile = map_tile.float() / 255
+        map_tile = map_tile / 255
 
-        return map_tile.float()
+        # Get the coverage tile
+        coverage_tile = self.get_tile(
+            self.coverage,
+            idx
+        )
+
+        # Convert to torch tensors
+        coverage_tile = torch.tensor(coverage_tile).long()
+
+        return map_tile.cuda(), coverage_tile.cuda()
 
 # run main stuff
 if __name__ == "__main__":
     dataset = LandCoverageDataset(
-        ["scratch/map/test.tif"],
-        tile_size=512,
+        tile_size=1024*4,
         scale=1,
-        pixel_size=16,
     )
 
-    model = torch.jit.load("models/model_8.pth").eval()
+    # Display whole map
+    # map = dataset.map
+    # coverage = dataset.coverage
+    # map = np.moveaxis(map, 0, -1)
+    # coverage = np.moveaxis(coverage, 0, -1) * (255 / NUM_SEGMENTS)
+    # map = cv2.resize(map, (map.shape[1] // 2, map.shape[0] // 2))
+    # coverage = cv2.resize(coverage, (coverage.shape[1] // 2, coverage.shape[0] // 2))
+    # cv2.imwrite("images/map.jpg", map)
+    # cv2.imwrite("images/coverage.jpg", coverage)
 
+    # Display a few tiles
+    for i in range(10):
+        map_tile, coverage_tile = dataset[i]
+
+        # Convert to numpy array
+        map_tile = map_tile.cpu().numpy()
+        coverage_tile = coverage_tile.cpu().numpy()
+
+        # Convert to RGB
+        map_tile = np.moveaxis(map_tile, 0, -1) * 255
+
+        # Convert to RGB
+        coverage_tile = np.moveaxis(coverage_tile, 0, -1) * 255 / NUM_SEGMENTS
+
+        # Display
+        cv2.imwrite(f"images/{i}_map_tile.jpg", map_tile)
+        cv2.imwrite(f"images/{i}_coverage_tile.jpg", coverage_tile)
     

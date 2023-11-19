@@ -5,7 +5,7 @@ from math import log2
 from skimage.segmentation import flood_fill as skimage_flood_fill
 
 TILE_SIZE = 512
-NUM_SEGMENTS = 32
+NUM_SEGMENTS = 20
 
 class AE(torch.nn.Module):
     def __init__(self, **kwargs):
@@ -105,7 +105,7 @@ class AE(torch.nn.Module):
         # Image
         y = self.decoded(x)
 
-        return y
+        return y, vector
 
     def forward_encode(self, x):
         # Encode
